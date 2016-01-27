@@ -1,0 +1,1666 @@
+#!/usr/bin/python3 -u
+# -*- coding: utf-8 -*-
+"""
+  FPLO2WANNIER90
+  
+  Copyright 2015 Mwersad Mostaghimi
+  IRAN-Isfahan University of Technology
+  Mail:m.mostaghimi@ph.iut.ac.ir
+  Phone:+98-31-133-911-951
+  
+  This program is free software; you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation; either version 2 of the License, or
+  (at your option) any later version.
+  
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+  
+  You should have received a copy of the GNU General Public License
+  along with this program; if not, write to the Free Software
+  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
+  MA 02110-1301, USA.
+"""  
+#====================================================================#
+#          first we import require libraries
+#====================================================================#
+from __future__ import division
+from numpy import * 
+from shutil import rmtree
+import os
+import re
+from optparse import OptionParser
+from  time import clock,strftime , gmtime
+import pickle
+#====================================================================#
+#              header 
+#====================================================================#
+def print_header():
+    print(11*" ",32*"=",
+     "\n",10*" ","=     =   == ======   =====    =",
+     "\n",10*" ","=  ==== == = ===== === === === =",
+     "\n",10*" ","=     =   == ==== ===== == === =",
+     "\n",10*" ","= ===== ==== ==== ===== ===== ==",
+     "\n",10*" ","= ===== ==== ==== ===== ===  ===",
+     "\n",10*" ","= ===== ==== ===== === ===  ====",
+     "\n",10*" ","= ===== ====     ==   ===      =",
+     "\n",60*"=",
+     "\n=  ====    ====   == =======  ===== =  ===== =   =    =   ===",
+     "\n= ======  ====== == = ======  ===== =  ===== == == ==== == ==",
+     "\n= ===== = ====== = === ===== = ==== = = ==== == == ==== == ==",
+     "\n== === === ==== =       ==== == === = == === == ==    =   ===",
+     "\n=== == ==== == = ======= === === == = === == == == ==== == ==",
+     "\n====  ======  = ========= == ==== = = ==== = == == ==== === =",
+     "\n===== ====== = =========== = =====  = =====  =   =    = ==== ",
+     "\n",60*"=",
+     "\n",9*"="," VERSION : 0.9 , m.mostaghimi@iut.ac.ir ",9*"=",
+     "\n",60*"=")#
+#====================================================================#
+#                this is the main function 
+#====================================================================#
+def main():
+    #global variables#
+    data ={"apts":[],"pdos_pts":[],"kmesh":[],"subdivisions":[],
+            "relative":[],"wyckoff":[],"kpoints":[],"kpts":[],
+            "frapts":[],"sapts":[]}
+    # restarter #
+    data,points,work_dir,temp,contfile,fplo2wan,eigen_file,kps , xsfer= restarter(data)
+    print_info(data)
+    # print(information that catched from files #
+    start_calculation = clock()
+    # saving data#
+    data_saver(data,temp)
+    # extract eigenvalues from file #
+    data["eigen"] = genfromtxt(eigen_file)
+    # projections finder #
+    proj_start=clock()
+####################################################
+    proj_start=clock()
+    data["Gn"],data["total_num_wan"] = projection(fplo2wan,data, points ,xsfer)   
+    data["Gnfr"],data["total_nfr"]= f_r_projection(data,points)
+    data["pdos_Gn"],data["total_num_pdos"] = projection(fplo2wan,data,points,"n")
+#    data["pdos_Gn"],data["total_num_pdos"] = dos_projection(fplo2wan,data,points)
+    data["dos_matrix"] = zeros((data["energy_dos_win"][2]+2,data["total_num_pdos"] + 1),dtype=complex)
+    data["dos_matrix"][1:,0] = [data["energy_dos_win"][0]+i*data["energy_dos_win"][3] for i in range(data["energy_dos_win"][2]+1)]
+    data["dos_matrix"][0,1:] = [i for i in range(1,data["total_num_pdos"]+1)]
+
+    data["dos_matrix_sigma"] = zeros((data["energy_dos_win"][2]+2,data["total_num_pdos"] +1),dtype=complex)
+    data["dos_matrix_sigma"][1:,0] = [data["energy_dos_win"][0]+i*data["energy_dos_win"][3] for i in range(data["energy_dos_win"][2]+1)]
+    data["dos_matrix_sigma"][0,1:] = [i for i in range(1,data["total_num_pdos"] +1)]
+    data["dos_mid_matrix"] = zeros((data["energy_dos_win"][2]+2,data[ "total_num_pdos"] +1),dtype=complex)
+    data["dos_mid_matrix2"] = zeros((data["energy_dos_win"][2]+2,data[ "total_num_pdos"] +2),dtype=complex)
+    data["dos_matrix_sigma_orth"] = zeros((data["energy_dos_win"][2]+2,data[ "total_num_pdos"]+2),dtype=complex)
+    data["dos_matrix_sigma_orth"][1:,0] = [data["energy_dos_win"][0]+i*data[ "energy_dos_win"][3] for i in range(data["energy_dos_win"][2]+1)]
+    data["dos_matrix_sigma_orth"][0,1:] = [i for i in range(1,data[ "total_num_pdos"] +2)]
+#
+    print("projections extracted in %s seconds" %(clock()-proj_start))
+    #main part#
+    mmn_amn_cal(data,points,temp,fplo2wan,eigen_file)
+    #################################################
+    print("calculations are done in %s seconds" %(clock()-start_calculation))
+    data={}
+    exit(0)
+#==========================================================                     
+#       ALL OF MY FUNCTIONS COMMING BELOW 
+# this part calculat the wannier.mmn and wannier.amn 
+#==========================================================
+def mmn_amn_cal(data,points,temp,fplo2wan,eigen_file):
+    header_writer(data,fplo2wan,"wannier.mmn")
+    header_writer(data,fplo2wan,"wannier.amn")
+    header_writer(data,fplo2wan,"wannier1.amn")
+    header_writer(data,fplo2wan,"wannierfr.amn")
+    wannier_eig = open("%s/wannier.eig"%fplo2wan,"a")
+    wan = open("%s/wannier.mmn" %fplo2wan ,"a")
+#    kppl={}
+    for kpoint in data["kpoints"]:
+        spin_prin=spin=1
+        ik = data["kpoints"].index(kpoint)+1
+        t=clock()
+        print("\nkpoint is : %s = %s" % (ik,kpoint))
+        print("kpoint file is loading...")
+#        if ik in kppl:
+#            vaset = kpfile
+#            kpfile=kppl[ik]
+#            kppl={}
+#            kppl[ik-1]= vaset
+#        else:
+#            kpfile = genfromtxt(temp+"/waves/%s"%ik,comments ='#').view(complex)
+        kpfile = genfromtxt(temp+"/waves/%s"%ik,comments ='#').view(complex)
+        print("kpoint was loaded in %s seconds."%(clock()-t))
+        bandcount = 0
+        for n in data["nbreak"]:
+            dmin = data["nbreak"].index(n)*(data["ngridpoints"])
+            umax = dmin+data["ngridpoints"]
+            psi_n_k = kpfile[dmin:umax]
+            print("n, k,psi:%s,%s,\n%s"%(n,ik,psi_n_k))
+            ortho = sum(multiply(psi_n_k.conj(),psi_n_k))*data["dv"]
+            print("orthonormal coefficent is:%s "%ortho)
+            #you can change "atol" value if you need different accuracy
+            if not isclose(ortho.real,1.0,atol=0.04):
+                _ans_ = input("orthonormal coefficent is %s .do you want continue?(y/n)"%ortho)
+                with open(fplo2wan+"/wannier.orthonormal","a") as f:
+                   f.write("|PSI_%s_%s|^2      %s\n" %(n,ik,ortho))
+                if _ans_ =="n":
+                    exit(0)
+            #================================================                     
+            # calculaton part for dos_matrix files 
+            #================================================                            
+            if n in data["pdos_bands"]:
+                lenght = len(data["dos_matrix"])
+                en = data["eigen"][ik-1][n]
+                print("kpoint_band_eigenvalue: %s     %s     %s"%(ik,n,en))
+                if en < data["dos_matrix"][1][0] or en > data["dos_matrix"][-1][0]:
+                    pass
+                else:
+                    for ind in range(2,lenght):
+                        if data["dos_matrix"][ind-1][0] <= en and en < data["dos_matrix"][ind][0]:
+                            data["dos_matrix"]=pmaker(psi_n_k,kpoint,data["a"],
+                                data["pdos_Gn"],data["dos_matrix"],data["dv"],ind)
+                            break
+                #=================================================                            
+                # calculaton part for dos_matrix_sigma files 
+                #=================================================                            
+                data["dos_mid_matrix"] *= 0
+                data["dos_mid_matrix"] = psigmaker(psi_n_k,ik,kpoint,data["a"],data["pdos_Gn"],data["dv"],data["dos_mid_matrix"])
+                for ind in range(1,lenght):
+                    spread_coeff = (1/(data["dos_sigma"]*1.772453851))*exp((-1*pow((data["dos_matrix_sigma"][ind][0]-en)/data["dos_sigma"],2)))
+                    data["dos_mid_matrix"][ind,1:] *= spread_coeff
+                data["dos_matrix_sigma"] += data["dos_mid_matrix"]
+                #==============================================                            
+                # calculaton part for dos_matrix_sigma_ortho files 
+                #==============================================                            
+                data["dos_mid_matrix2"] *= 0
+                data["dos_mid_matrix2"] = psigmaker2(psi_n_k,ik,kpoint,data["a"],data["pdos_Gn"],data["dv"],data["dos_mid_matrix2"])
+                for ind in range(1,lenght):
+                    spread_coeff = (1/(data["dos_sigma"]*1.772453851))*exp((-1*pow((data["dos_matrix_sigma_orth"][ind][0]-en)/data["dos_sigma"],2)))
+#                    spread_coeff = exp((-1*pow((data["dos_matrix_sigma_orth"][ind][0]-en)/data["dos_sigma"],2)))
+                    data["dos_mid_matrix2"][ind,1:] *= spread_coeff
+                data["dos_matrix_sigma_orth"] += data["dos_mid_matrix2"]
+            #======================================================                     
+            #======================================================                     
+            # calculaton part for Wannier90 files
+            #======================================================                            
+            if n in data["sbands"]:
+                bandcount =data["sbands"].index(n)+1
+                data["apts"] = amaker(bandcount,psi_n_k,ik,
+                                      kpoint,data["a"],data["dv"],
+                                      data["apts"],data["Gn"],fplo2wan)
+                data["frapts"]=framaker(bandcount,psi_n_k,ik,
+                                      kpoint,data["a"],data["dv"],
+                                      data["frapts"],data["Gnfr"],fplo2wan)
+                print("amaker done for <psi_%s,%s|A>."%(n,ik))
+                #==================================================                     
+                # writing eigenvalues to wannier.eig
+                #==================================================                           
+                print("n,ik,eigen=%s,%s,%s"%(bandcount,ik,data["eigen"][ik-1][n]))
+                wannier_eig.write("%s %s %s\n"%(repr(bandcount).ljust(15),
+                                                repr(ik).ljust(15),
+                                                repr(data["eigen"][ik-1][n]).ljust(20)))
+        #==================================================                     
+        # evaluating and writing wannier.mmn file =========
+        #==================================================                           
+        if 0 not in data["sbands"]:
+            for ib in range(1,data["nnkp"][0]+1):             
+                n_nnkp = (ik-1)*data["nnkp"][0]+ib
+                ik_prin = data["nnkp"][n_nnkp][1]
+                kprin = data["kpoints"][ik_prin-1]
+                Gvects =  data["nnkp"][n_nnkp][2:5]
+                b1 = data["b_vect"][ib-1]
+#                b=subtract(kprin,kpoint)
+                b=add(subtract(kprin,kpoint),dot(Gvects,2*pi*array(data["g"])))
+#                b=subtract(subtract(kprin,kpoint),dot(Gvects,2*pi*array(data["g"])))
+                print("b1 is: %s"%b1)
+                print("b is:b_%s = %s" %(ib,b))
+                print("kpoint_prin is :%s = %s" % (ik_prin,kprin))
+                t =clock()
+                print("kpoint_prin file is loading...")
+                if ik != ik_prin:
+                    kperfile = genfromtxt(temp+"/waves/%s"%ik_prin,comments ='#').view(complex)
+                elif ik == ik_prin:
+                    kperfile = kpfile
+                if "<psi%s|psi%s,%s>" %(ik,ik_prin,ib) in data["kpts"]:
+                    break
+                else:
+                    print("kpoint_prin was loaded in %s seconds."%(clock()-t))
+                    data["kpts"].append("<psi%s|psi%s,%s>" %(ik,ik_prin,ib))
+                    b_prin = subtract(data["kpoints"][ik-1],data["kpoints"][ik_prin-1])
+                    print("we are calculating <psi_n%s|psi_m%s,%s>" %(ik,ik_prin, ib))
+                    integ_fixpart = exp(multiply(-1j,dot(points,b))).reshape((data["ngridpoints"],1))
+                    wan.write(" %s %s %s %s %s \n" %(repr(ik).ljust(6),repr(ik_prin).ljust(6),
+                                                     repr(Gvects[0]).ljust(6),repr(Gvects[1]).ljust(6),
+                                                     repr(Gvects[2]).ljust(6)))
+                    for n in data["sbands"]:
+                        dmin = data["nbreak"].index(n)*(data["ngridpoints"])
+                        umax = dmin+data["ngridpoints"]
+                        psi_n_k = kpfile[dmin:umax]
+                        ortho = sum(multiply(psi_n_k.conj(),psi_n_k))*data["dv"]
+                        #you can change "atol" value if you need different accuracy
+                        if not isclose(ortho.real,1.0,atol=0.04):
+                            _ans_ = input("orthonormal coefficent is %s .do you want continue?(y/n)"%ortho)
+                            with open(fplo2wan+"/wannier.orthonormal","a") as f:
+                               f.write("|PSI_%s_%s|^2      %s\n" %(n,ik,ortho))
+                            if _ans_ =="n":
+                                exit(0)
+                        for m in sorted(data["sbands"]):
+                            print("we are calculating <psi_%s,%s|psi_%s,%s,%s>" %(n,ik,m,ik_prin,ib))
+                            dmin = data["nbreak"].index(m)*(data["ngridpoints"])                            
+                            umax = dmin+data["ngridpoints"]
+                            psi_m_k_prin = kperfile[dmin:umax]
+                            integral = multiply(sum(multiply(multiply(integ_fixpart,conj(psi_n_k)),psi_m_k_prin)),data["dv"])
+                            wan.write(" %s %s \n" %(repr(integral.real).ljust(26),
+                                                    repr(integral.imag).ljust(26)))
+                    print("calculation of <psi_n%s|psi_m%s,%s> was done." %(ik,ik_prin, ib))
+    wannier_eig.close()
+    wan.close()                   
+    if data["prt"] == "full":kpt_print(data["apts"])
+    if data["prt"] == "full":kpt_print(data["kpts"])
+    data["dos_matrix"][1:,1:] =   multiply(1.0/data["nkp"], data["dos_matrix"][1:,1:])
+    data["dos_matrix_sigma"][1:,1:]  =    multiply(1.0/data["nkp"], data["dos_matrix_sigma"][1:,1:])
+    data["dos_matrix_sigma_orth"][1:,1:] = multiply(1.0/data["nkp"],data["dos_matrix_sigma_orth"][1:,1:])
+    dos_mat(data["dos_matrix"],fplo2wan,"/wannier.pds")
+    dos_mat(data["dos_matrix_sigma"],fplo2wan,"/wannier.pds_sigma")
+    dos_mat(data["dos_matrix_sigma_orth"],fplo2wan,"/wannier.pdos_sigma_orth")
+#==========================================================                     
+# we take the methods and files and folders which user
+#     say to program in this piece of program
+#==========================================================                     
+def parser_files():
+    print_header()
+    parser = OptionParser(usage = "usage: %prog [options] filename",
+                          version = "%prog 3.15")
+    parser.add_option("-d","--work_dir",
+                      help = """\nselect the directory which all of
+                       FPLO calculation done there.defualt is current
+                       directory""",
+                      dest = "work_dir" ,
+                      default = os.getcwd())
+    parser.add_option("-w","--wave",
+                      dest = "wave_file",
+                      help ="""\nthe wave file that is calculated by
+                       FPLO. default=./+gridscfpsi.g001 """,
+                      default=os.getcwd()+"/+gridscfpsi.g001")
+    parser.add_option("-s","--symmetry",
+                      dest = "symmetry",
+                      default = os.getcwd()+"/+symmetry",
+                      help ="""\nsymmetry file which is produced by 
+                       FPLO. default=./+symmetry""")
+    parser.add_option("-c","--control",
+                      dest = "control",
+                      default = os.getcwd()+ "/wannier.win",
+                      help ="""\nb vectors and any other kind of 
+                       information that is needed for calculation.
+                       default=./wannier.win""")
+    parser.add_option("-n","--nnkp",
+                      dest = "nnkp",
+                      default = os.getcwd()+ "/wannier.nnkp",
+                      help ="""\nnnkp file which is produced by 
+                      wannier90.x post-processing calculation.
+                       default=./wannier.nnkp""")
+    parser.add_option("-t" ,"--temp",
+                      dest = "temp",
+                      help = """\nassign temp folder if you slice the
+                       file of wavefunctions before.if you run the
+                       FPLO2WANNIER on the same results of FPLO
+                       before you should have a TEMP folder.""")
+    parser.add_option("-i" ,"--fplo_in",
+                      dest = "fplo_in",
+                      default = os.getcwd()+"/=.in",
+                      help = """\nassign =.in file which is input
+                       file of FPLO """)
+    parser.add_option("-e" ,"--eigen",
+                      dest = "eigen",
+                      default = os.getcwd()+"/+band_kp",
+                      help = """\nthis switch is for setting eigenvalues
+                       input.default mode is ./+band_kp""")
+    parser.add_option("-b" ,"--bvec",
+                      dest = "bvec",
+                      default = os.getcwd()+"/wannier.wout",
+                      help = """\nassign wannier.out or any other file
+                       which is \"wannie90.x -pp \" output. defaulte 
+                       mode is ./wannier.wout""")
+    parser.add_option("-k" ,"--kps",
+                      dest = "kps",
+                      default = os.getcwd()+"/=.kp",
+                      help = """\nassign =.kp or any other file which 
+                      is contain kpoints in same manner.you can
+                       produce it by \"kmeshfplo\" for calculation of
+                        \"+bands_kp\" by FPLO. defaulte mode is ./=.kp""")
+    parser.add_option("-p","--prt",
+                      dest = "prt",
+                      default = "y",
+                      help = """\nassign full if you want print
+                       more information""")
+    parser.add_option("-x","--xsf",
+                      dest = "xsf",
+                      default = "n",
+                      help = """\nassign y if you want initial
+                       projections xsf files""")
+
+    (options, args) = parser.parse_args()
+
+    return options.work_dir+"/" , options.wave_file , options.symmetry , options.control,options.temp,options.kps,options.fplo_in,options.eigen,options.prt,options.xsf,options.bvec,options.nnkp
+#==========================================================                     
+# restart function it extract the informaton from files
+#==========================================================                     
+def restarter(data):
+    work_dir,wavefile ,_symmetry,contfile,temp_fold ,kps ,fplo_in,eigen_file,data["prt"],xsfer,wout,nnkp_file= parser_files()
+    #making the file wannier.mmn and folder of results
+    fplo2wan = fmaker("folder",work_dir,"/FPLO2WAN/")
+    #restart part  
+    if temp_fold == None:                                  
+        timer = clock()
+         #we make the temp folder for our files
+        temp = fmaker("folder",work_dir,"/TEMP/")          
+        os.mkdir("%s/waves" %(temp))
+        print("directories was created.")
+        print_infile(work_dir,fplo2wan,_symmetry,wavefile,contfile,temp,eigen_file)
+        data["subdivisions"] = subdivisions(fplo_in)
+        data = symmetry(_symmetry,data)
+        data["kmesh"] = kmesher(fplo_in)
+        data["relative"] = relativer(fplo_in)
+        data["nkp"],data["max_number_of_bands"],data["mspin"],data["ngridpoints"], data["k_points"] = wave_info(wavefile,temp,kps,data["kmesh"])
+        data = data_mining(fplo2wan,contfile,data)
+        data["kpoints"],points = wavebreaker(wavefile,temp,data["nbreak"],data["subdivisions"])
+        data["dv"] =  data["grid_volume"]/data["ngridpoints"]
+        data["b_vect"] = bvector(wout)
+        data["nnkp"]=nnkp_read(nnkp_file)
+        print("\nmaking temp-files is completed in %s seconds " % (clock()-timer))
+    else:
+        temp = work_dir+"/"+os.path.basename(temp_fold)
+        print_infile(work_dir,fplo2wan,_symmetry,wavefile,contfile,temp,eigen_file)
+        data_out = open(temp+"/data",'rb')
+        data = pickle.load(data_out)
+        data_out.close()
+        data = symmetry(_symmetry,data)
+        data["nkp"],data["max_number_of_bands"],data["mspin"],data["ngridpoints"], data["k_points"] = wave_info(wavefile,temp,kps,data["kmesh"])
+        print("Gridpoints are loading ...")
+        points = genfromtxt("%s/points"%temp,dtype=float64)
+        data = data_mining(fplo2wan,contfile,data)
+        data["dv"] = data["grid_volume"]/data["ngridpoints"]
+        data["b_vect"] = bvector(wout)
+        data["nnkp"]=nnkp_read(nnkp_file)
+    return data,points,work_dir,temp,contfile,fplo2wan,eigen_file,kps,xsfer
+#==============================================
+# function for extracting b vectors 
+#==============================================
+def bvector(wout):    
+    bvect=[]
+    print(wout)
+    with open(wout,"r") as f:
+        while True:
+            line= f.readline()
+            if "No.         b_k(x)      b_k(y)      b_k(z)        w_b"  in line:
+                f.readline()
+                break
+        while True:
+            line=f.readline()
+            if "-----" in line:
+                break
+            else:
+                bvect.append([float(i)*0.52918 for i in line.split()[2:5]])
+    return bvect
+
+#==============================================
+# wave info extractor
+#==============================================
+def wave_info(wavefile,temp,kps,kmesh):            
+    print("FPLO2WANNIER90 is extracting informations of wave functions ...")
+    kpoints=[]
+    with open(wavefile,"rb") as p:
+        p.readline()
+        nkp=int(p.readline().split()[2])
+        mnob=int(p.readline().split()[5])
+        mspin=int(p.readline().split()[2])
+        kpoints=[]
+        p.readline()
+        ngridpoints=int(p.readline().split()[2])
+    with open(kps,"r") as f:
+         cont=kmesh[0]*kmesh[1]*kmesh[2]
+         f.readline()
+         for line in range(cont):
+             kpoints.append([float(i) for i in f.readline().split()])
+    return nkp,mnob,mspin,ngridpoints,kpoints
+
+#======================================================
+# this function break wave
+# file to some suitable files
+#=====================================================
+def wavebreaker(wavefile,temp,nbreak,subdivisions):            
+    points=[]
+    with open(wavefile,"rb") as p:
+        print("FPLO2WANNIER90 is extracting wave functions at kpoints ....")
+        p.readline()
+        nkp=int(p.readline().split()[2])
+        mnob=int(p.readline().split()[5])
+        mspin=int(p.readline().split()[2])
+        kpoints=[]
+        p.readline()
+        ngridpoints=int(p.readline().split()[2])
+        p.readline()
+        with open("%s/points" %temp,"wb") as f:
+            for i in range(ngridpoints):
+                grid = p.readline()
+                f.write(grid)
+                points.append([float(q) for q in grid.split()])
+        for ik in range(1,nkp+1):
+            with open("%s/waves/%s" %(temp,ik),"wb") as f:
+                f.write(p.readline())
+                kpoint = p.readline()
+                f.write(kpoint)
+                kpoints.append([float(eval(x)) for x in kpoint.split()[3:6]])
+                for spin in range(1,mspin+1):
+                    f.write(p.readline())
+                    line=p.readline()
+                    Nbands = int(line.split()[2])
+                    f.write(line)
+                    for n in range(1,Nbands+1):
+                        if n in nbreak:
+                            for i in range(ngridpoints+2):
+                                f.write(p.readline())
+                        else:
+                            for i in range(ngridpoints+2):
+                                l=p.readline()
+    return kpoints,array(points)
+#==============================================
+# this function extract information from 
+#  control file and write "wannier.win"
+#==============================================
+def data_mining(fplo2wan,contfile,data):                
+    f = open(contfile,"r")
+    wannier_win = open(fplo2wan+"/wannier.win","a")
+    p = 0
+    d = 0
+    w = 0
+    num_bands=0
+    exclude = []
+    data["wyckoff"] = []
+    data["nbreak"] = []
+    data["pdos"] = []
+    data["pdoses"]=""
+    data["pdos_bands"] = []
+    data["projections"] = []
+    data["projection"] = ""
+    data["sbands"] = []
+    #default value for sigma in spread of dos projection (ev)
+    data["dos_sigma"] = 0.2 
+    data["frprojections"]=[]
+    for lines in f:
+        line=""
+        for i in lines:
+           if i == "!" or i=="#":
+               break
+           else:
+               line=line+i
+        m = line.split()
+        if m != []:
+            if  "subdivisions" in line :
+                data[m[0].lower()] = [int(x) for x in m[1:]]
+            elif "pdos_bands" in line:
+                line=re.sub("[:= ,]"," ",line)
+                line=m[1:]
+                for par in line:
+                    if "-" in par:
+                        par = [int(x) for x in par.split("-")]
+                        for num in range(par[0],par[1]+1):
+                            data["pdos_bands"].append(num)
+                    else:
+                        data["pdos_bands"].append(int(par))
+                data["pdos_bands"]=sorted(data["pdos_bands"])
+            
+            elif "frprojections" in line:
+                data["frprojections"].append(re.split("[:,;=\n ]",line)[1:])
+            elif "begin dos_projections" in line:
+                d=1
+            elif "end dos_projection" in line:
+                d=0
+            elif "begin projections" in line:
+                wannier_win.write(lines)
+                p=1
+            elif "end projections" in line :
+                wannier_win.write(lines)
+                p=0 
+            elif "begin atoms_frac" in line:
+                wannier_win.write(lines)
+                w=1
+            elif "end atoms_frac" in line:
+                wannier_win.write(lines)
+                w = 0
+            elif w==1:
+                wannier_win.write(lines)
+                m[1:]=[float(eval(x)) for x in m[1:]]
+                data["wyckoff"].append(m)
+            elif d==1:
+                if "bohr" in line or "Bohr" in line:
+                    pass
+                else:
+                   data["pdos"].append(re.split("[:,;=\n ]",line))
+            elif p==1:
+                wannier_win.write(lines)
+                if "bohr" in line or "Bohr" in line:
+                    pass
+                else:
+                    data["projections"].append(re.split("[:,;=\n ]",line))
+                    data["projection"]=data["projection"]+line
+            elif "energy_dos" in line:
+                data["energy_dos_win"]= [float(x) for x in m[1:3]]
+                #[minimum energy,maximum energy,
+                #number of part delta enegy should divide]                  
+                data["energy_dos_win"].append(int(m[3]))  
+                data["energy_dos_win"].append((data["energy_dos_win"][1]-data["energy_dos_win"][0])/data["energy_dos_win"][2])
+            elif "dos_sigma" in line:
+                data["dos_sigma"] = float(m[1])
+            elif "special_bands" in line:
+                line=re.sub("[:= ,]"," ",line)
+                line=m[1:]
+                for par in line:
+                    if "-" in par:
+                        par = [int(x) for x in par.split("-")]
+                        for num in range(par[0],par[1]+1):
+                            data["sbands"].append(num)
+                    else:
+                        data["sbands"].append(int(par))
+                data["sbands"]=sorted(data["sbands"])
+            elif "num_bands" in line:
+                num_bands = int(m[2])
+                wannier_win.write(lines)
+            elif "exclude_bands" in line:
+                wannier_win.write(lines)
+                line=re.sub("[:= ,]"," ",line)
+                line=m[1:]
+                for par in line:
+                    if "-" in par:
+                        par = [int(x) for x in par.split("-")]
+                        for num in range(par[0],par[1]+1):
+                            exclude.append(num)
+                    else:
+                        exclude.append(int(par))
+                exclude=sorted(exclude)
+            else:
+                wannier_win.write(lines)
+    if set(exclude)!=[]:
+        for i in exclude:
+            if i in data["sbands"]:
+                data["sbands"].remove(i)
+    if 0 in data["pdos_bands"]:
+        data["pdos_bands"] = data["sbands"]
+ 
+    for i in data["sbands"]:
+        if i not in data["nbreak"] and i != 0:
+            data["nbreak"].append(i)
+    for i in data["pdos_bands"]:
+        if i not in data["nbreak"]:
+            data["nbreak"].append(i)
+    if num_bands != len(data["sbands"]) and 0 not in data["sbands"]:
+        print("Error:special_bands is not equal to num_bands")
+        exit(0)
+    data["nbreak"].sort()
+    data["THETA"]={   "s":        [s]
+                    ,"pz":        [pz]                        
+                    ,"px":        [px]
+                    ,"py":        [py]
+                    ,"dz2":       [dz2]
+                    ,"dxz":       [dxz]
+                    ,"dyz":       [dyz]
+                    ,"dx2-y2":    [dx2_y2]
+                    ,"dxy":       [dxy]
+                    ,"fz3":       [fz3]
+                    ,"fxz2":      [fxz2]
+                    ,"fyz2":      [fyz2]
+                    ,"fz(x2-y2)": [fz__x2_y2__]
+                    ,"fxyz":      [fxyz]
+                    ,"fx(x2-3y2)":[fx__x2_3y2__]
+                    ,"fy(3x2-y2)":[fy__3x2_y2__]
+                    ,"sp"  :      [sp_1,sp_2]
+                    ,"sp-1":      [sp_1]
+                    ,"sp-2":      [sp_2]
+                    ,"sp2"  :     [sp2_1,sp2_2,sp2_3]
+                    ,"sp2-1":     [sp2_1]
+                    ,"sp2-2":     [sp2_2]
+                    ,"sp2-3":     [sp2_3]
+                    ,"sp3"  :     [sp3_1,sp3_2,sp3_3,sp3_4]
+                    ,"sp3-1":     [sp3_1]
+                    ,"sp3-2":     [sp3_2]
+                    ,"sp3-3":     [sp3_3]
+                    ,"sp3-4":     [sp3_4]
+                    ,"sp3d"  :    [sp3d_1,sp3d_2,sp3d_3,sp3d_4,sp3d_5]
+                    ,"sp3d-1":    [sp3d_1]
+                    ,"sp3d-2":    [sp3d_2]
+                    ,"sp3d-3":    [sp3d_3]
+                    ,"sp3d-4":    [sp3d_4]
+                    ,"sp3d-5":    [sp3d_5]
+                    ,"sp3d2"  :   [sp3d2_1,sp3d2_2,sp3d2_3,sp3d2_4,sp3d2_5,sp3d2_6]
+                    ,"sp3d2-1":   [sp3d2_1]
+                    ,"sp3d2-2":   [sp3d2_2]
+                    ,"sp3d2-3":   [sp3d2_3]
+                    ,"sp3d2-4":   [sp3d2_4]
+                    ,"sp3d2-5":   [sp3d2_5]
+                    ,"sp3d2-6":   [sp3d2_6]
+                    ,"p"      :   [_P_]
+                                            }
+                    
+    data["R"]={  1:R1
+               , 2:R2
+               , 3:R3}
+    data["LMR"]={ "l=0,mr=1":s
+ 
+                  ,"l=1,mr=1":pz  
+                  ,"l=1,mr=2":px
+                  ,"l=1,mr=3":py
+ 
+                  ,"l=2,mr=1":dz2
+                  ,"l=2,mr=2":dxz
+                  ,"l=2,mr=3":dyz
+                  ,"l=2,mr=4":dx2_y2
+                  ,"l=2,mr=5":dxy
+  
+                  ,"l=3,mr=1":fz3
+                  ,"l=3,mr=2":fxz2
+                  ,"l=3,mr=3":fyz2
+                  ,"l=3,mr=4":fz__x2_y2__
+                  ,"l=3,mr=5":fxyz
+                  ,"l=3,mr=6":fx__x2_3y2__
+                  ,"l=3,mr=7":fy__3x2_y2__
+            
+                  ,"l=-1,mr=1":sp_1
+                  ,"l=-1,mr=2":sp_2
+            
+                  ,"l=-2,mr=1":sp2_1
+                  ,"l=-2,mr=2":sp2_2
+                  ,"l=-2,mr=3":sp2_3
+            
+                  ,"l=-3,mr=1":sp3_1
+                  ,"l=-3,mr=2":sp3_2
+                  ,"l=-3,mr=3":sp3_3
+                  ,"l=-3,mr=4":sp3_4
+            
+                  ,"l=-4,mr=1":sp3d_1
+                  ,"l=-4,mr=2":sp3d_2
+                  ,"l=-4,mr=3":sp3d_3
+                  ,"l=-4,mr=4":sp3d_4
+                  ,"l=-4,mr=5":sp3d_5
+            
+                  ,"l=-5,mr=1":sp3d2_1
+                  ,"l=-5,mr=2":sp3d2_2
+                  ,"l=-5,mr=3":sp3d2_3
+                  ,"l=-5,mr=4":sp3d2_4
+                  ,"l=-5,mr=5":sp3d2_5
+                  ,"l=-5,mr=6":sp3d2_6}                                              
+    return data
+# =========================================================
+#    symmetry function extract 
+# information from +symmetry file
+# =========================================================
+def symmetry(_symmetry,data):
+    with open(_symmetry,"r") as sym_file: 
+        for line in sym_file:
+            if "lattice constants" in line:
+                data["lattice constants"] = [float(x) for x in line.split()[2:]]
+            elif "axis angles    " in line:
+                data["axis angles"] = line.split()[3:]
+            elif "bravais lattice" in line:
+                data["bravais lattice"] = line.split()[3]
+    # b is primitive to bravais transformation
+            elif " b1 " in line:
+                data["b"]=[]
+                data["b"].append([float(eval(x)) for x in line.split()[2:]])
+            elif " b2 " in line:
+                data["b"].append([float(eval(x)) for x in line.split()[2:]])
+            elif " b3 " in line:
+                data["b"].append([float(eval(x)) for x in line.split()[2:]])
+    # unit vectors of primitive lattice #
+            elif "unit vectors of primitive lattice" in line:
+                data["unit vectors of primitive lattice"]=line.split()[5]
+            elif " u1 " in line:
+                data["u"]=[]
+                data["u"].append([float(x) for x in line.split()[2:]])
+            elif " u2 " in line:
+                data["u"].append([float(x) for x in line.split()[2:]])
+            elif " u3 " in line:
+                data["u"].append([float(x) for x in line.split()[2:]])
+    # lattice vectors
+            elif " a1 " in line:
+                data["a"]=[]
+                data["a"].append([float(x) for x in line.split()[2:]])
+            elif " a2 " in line:                                     
+                data["a"].append([float(x) for x in line.split()[2:]])
+            elif " a3 " in line:                                     
+                data["a"].append([float(x) for x in line.split()[2:]])
+    # reciprocial lattice vectors / 2*Pi
+            elif " g1 " in line:
+                data["g"]=[]
+                data["g"].append([float(x) for x in line.split()[2:]])
+            elif " g2 " in line:                                     
+                data["g"].append([float(x) for x in line.split()[2:]])
+            elif " g3 " in line:                                     
+                data["g"].append([float(x) for x in line.split()[2:]])
+    du =array(data["u"])*data["lattice constants"]
+    data["primitive_cell_volume"] = dot(du[0],cross(du[1],du[2]))
+    data["grid_volume"] = abs(dot(data["a"][0],cross(data["a"][1],data["a"][2])))
+    data["grid_cellover_primitive_cell"] = data["primitive_cell_volume"]/data["grid_volume"]
+    data["primitve_unit_vol"] = dot(data["b"][0],cross(data["b"][1],data["b"][2]))
+    return data
+# ================================================
+# this function make the files and folder 
+# which is needed for our calculations
+#=================================================
+def fmaker(fkind,root,name):              
+    while True:                                                    
+        try:
+            os.mkdir(root+name)
+            break
+        except:
+            ans = str(input("there is a \'%s\' with name of \'%s\' in \' %s \' .\ndo you want to remove it (y/n) : " % (fkind,
+                                       name,root ))).lower()
+            print("")
+            while True:
+                if ans=="y" or ans=="n":
+                    if ans == "y":
+                        rmtree(root+name)
+                        break
+                    elif ans=="n":
+                        name = input("enter a name for %s %s : " % (fkind, name))
+                        print("")
+                        break
+                    break
+                else:
+                    ans = str(input("there is a %s with name of %s.do you want to remove it (just: y or n) : " % (fkind,
+                                                 name))).lower()
+                    print("")
+    return root+name
+# ================================================
+# this function print(the  <Psi_n_k|Psi_m_k+b> 
+# which was calculated and was added to a list
+# ================================================
+def kpt_print(kpts):
+    n=0
+    for i in kpts:
+        if n%6==0:
+            print("\n")
+        print("%s _" %i, end='_')
+        n+=1
+    print("\n")
+#=================================================
+# this function print(the  <Psi_n_k|Psi_m_k+b> 
+# which was calculated and was added to a list
+#=================================================
+def apt_print(apts):
+    n=0
+    for i in apts:
+        if n%6==0:
+            print("\n")
+        print("%s _" %i,end='\n_')
+        n+=1
+    print("\n")
+#=================================================
+# checking of our calculation relativistic method
+#=================================================
+def relativer(fplo_in):                                               
+    with open(fplo_in,"r") as f:
+        while True:
+            if "relativistic" in f.readline():
+                relative = f.readline().split("\"")[1]
+                if relative == "non relativistic":
+                    wave_column=0
+                elif relative=="scalar relativistic":
+                    wave_column = 1
+                elif relative=="KH scalar relativistic":
+                    wave_column = 2
+                elif relative=="full relativistic":
+                    wave_column=3
+                else:
+                    print("relativistic method is not implemented in fplo2wannier")
+                break
+    return [relative,wave_column]
+#=================================================
+# this function extract the kmesh
+#=================================================
+def kmesher(fplo_in):                                        
+    with open(fplo_in,"r") as f:
+        while "bzone_integration" not in f.readline():
+            pass
+        kmesh = [int(x) for x in re.sub("[{}:;=t\n]","" ,f.readline()).split(",")[1:]]
+    return kmesh
+#=================================================
+# it extract subdivisions informations
+#=================================================
+def subdivisions(fplo_in):
+    with open(fplo_in,"r") as f:
+        while "grids[*]" not in f.readline():
+            pass
+        f.readline()
+        f.readline()
+        f.readline()
+        subdivision=[int(x) for x in re.split("[\,{\},{\,]",f.readline())[22:25]]
+    return subdivision
+#=================================================
+# print(folder and files 
+#=================================================
+def print_infile(work_dir,fplo2wan,_symmetry,wavefile,contfile,temp,eigen_file):
+    multer = int(60-len("files and folders"))
+    print("#"*multer,"files and folders", "#"*multer)
+    print("#","the output folder is produced".ljust(29),
+        "|",(fplo2wan).ljust(70),"#") 
+    print("#","symmetry file is".ljust(29)             ,
+        "|",_symmetry.ljust(70) ,"#")
+    print("#","wave file is".ljust(29)                 ,
+        "|",wavefile.ljust(70)  ,"#")
+    print("#","work directory is".ljust(29)            ,
+        "|",work_dir.ljust(70)  ,"#")
+    print("#","control file is".ljust(29)              ,
+        "|",contfile.ljust(70)  ,"#")
+    print("#","Temp folder is".ljust(29)               ,
+        "|",temp.ljust(70)      ,"#")
+    print("#","file contain eigenvalues is".ljust(29)  ,
+        "|",eigen_file.ljust(70),"#")
+    print(106*"#" )
+#=================================================
+# this function print(all of information
+#=================================================
+def print_info(data):                                              
+    mult=int((104-len("Informations"))/2)
+    print("#"*mult,"Informations", "#"*mult)
+    print("#","number of kpoints".ljust(29)   ,"|",repr(data["nkp"]).ljust(70)                ,"#")
+    print("#","max number of bands".ljust(29) ,"|",repr(data["max_number_of_bands"]).ljust(70),"#")
+    print("#","mspin".ljust(29)               ,"|",repr(data["mspin"]).ljust(70)              ,"#")
+    print("#","number of gridpoints".ljust(29),"|",repr(data["ngridpoints"]).ljust(70)        ,"#")
+    print("#","Relativistic".ljust(29)        ,"|",repr(data["relative"][0]).ljust(70)        ,"#")
+    print("#","Kmesh".ljust(29)               ,"|",repr(data["kmesh"]).ljust(70)              ,"#")
+    print("#","subdivisions".ljust(29)        ,"|",repr(data["subdivisions"]).ljust(70)       ,"#")
+    symmdict={"wyckoff"          :"wyckoff possitions (fractional)",
+              "coord"            :"Vloume(bohr)",
+              "b"                :"primitive to bravais transformation",
+              "a"                :"lattice vectors (bohr)",
+              "lattice constants":"lattice constants (bohr)",
+              "axis angles"      :"axis angles (degree)",
+              "g"                :"reciprocial lattice vectors / 2*Pi  (bohr^-1)",
+              "u"                :"unit vectors of primitive lattice (STC)",
+              "kpoints"          :"k_points(bohr^-1)",
+              "k_points"         :"k_points",
+              "b_vect"           :"b_vect (bohr)"}
+    for keys in data:
+        if type(data[keys]) is list:
+            if keys in symmdict:
+                mult=int((104-len(symmdict[keys]))/2)
+                print("#"*mult,symmdict[keys], "#"*mult)
+                for i in range(len(data[keys])):
+                    print("#",repr(keys+str(i+1)).ljust(29),"|",repr(data[keys][i]).ljust(70)     ,"#")
+    print(106*"#")
+#=================================================
+# saving data
+#=================================================
+def data_saver(data,temp):    
+    data_out=open(temp+"/data",'wb')
+    pickle.dump(data,data_out)
+    data_out.close()
+#=================================================
+# this function write xsf file for g_n  
+#=================================================
+def xsf(fplo2wan,data,num,g_n,trans):
+    with open(fplo2wan+"/xsf%s"%num,"a") as f:
+        txt= "CRYSTAL\nPRIMVEC"
+        primit=dot(array(data["u"]),array(data["a"]))*0.529177
+        for i in range(3):
+            txt=txt+"\n    "
+            for j in range(3):
+                txt=txt+repr(primit[i][j]).ljust(26)
+        txt=txt+"\nCONVVEC"
+        conven=dot(primit,array(data["b"]))
+        for i in range(3):
+            txt=txt+"\n    "
+            for j in range(3):
+                txt=txt+repr(conven[i][j]).ljust(26)
+        txt =txt+"\nPRIMCOORD\n    %s    1"%repr(len(data["wyckoff"])).ljust(10)
+        wyckoff=[ x[1:] for x in data["wyckoff"]]
+        wyckoffs = dot(array(wyckoff),array(data["a"]))
+        cont=0
+        for wyckoff in wyckoffs:
+            atom="\n %s %s %s %s"%(data["wyckoff"][cont][0].ljust(4),
+                    repr(wyckoff[0]*0.529177).ljust(17),
+                    repr(wyckoff[1]*0.529177).ljust(17),
+                    repr(wyckoff[2]*0.529177).ljust(17))
+            cont=cont+1
+            txt=txt+atom
+        f.write(txt)
+        f.write("\nBEGIN_BLOCK_DATAGRID_3D\n3D_field\nBEGIN_DATAGRID_3D_UNKNOWN")
+        xsfmatrix=zeros((data["subdivisions"][0],data["subdivisions"][1],data["subdivisions"][2]))
+        n=0
+        for cor_z in range(0,data["subdivisions"][2]*1):
+            for cor_y in range(0,data["subdivisions"][1]*1):
+                for cor_x in range(0,data["subdivisions"][0]*1):
+                    xsfmatrix[cor_x][cor_y][cor_z]=g_n[n]
+                    n=n+1
+        f.write("\n    %s %s %s\n    %s %s %s"%(repr(data["subdivisions"][0]).ljust(6),
+                                               repr(data["subdivisions"][1]).ljust(6),
+                                               repr(data["subdivisions"][2]).ljust(6),
+                                               repr(trans[0]*0.529177).ljust(6),
+                                               repr(trans[1]*0.529177).ljust(6),
+                                               repr(trans[2]*0.529177).ljust(6)))
+        f.write("\n    %s %s %s"%(repr(array(data["a"])[0][0]*0.529177).ljust(26),
+                                  repr(array(data["a"])[0][1]*0.529177).ljust(26), 
+                                  repr(array(data["a"])[0][2]*0.529177).ljust(26)))
+        f.write("\n    %s %s %s"%(repr(array(data["a"])[1][0]*0.529177).ljust(26),
+                                  repr(array(data["a"])[1][1]*0.529177).ljust(26), 
+                                  repr(array(data["a"])[1][2]*0.529177).ljust(26)))
+        f.write("\n    %s %s %s"%(repr(array(data["a"])[2][0]*0.529177).ljust(26),
+                                  repr(array(data["a"])[2][1]*0.529177).ljust(26), 
+                                  repr(array(data["a"])[2][2]*0.529177).ljust(26)))
+        cont=0
+        for cor_z in range(0,data["subdivisions"][2]):
+            for cor_y in range(0,data["subdivisions"][1]):
+                for cor_x in range(0,data["subdivisions"][0]):
+                    if cont%5!=0:
+                        f.write(" %s"%repr(xsfmatrix[cor_x][cor_y][cor_z].real).ljust(26))
+                    else:               
+                        f.write("\n%s"%repr(xsfmatrix[cor_x][cor_y][cor_z].real).ljust(26))
+                    cont=cont+1
+  
+        f.write("\nEND_DATAGRID_3D")
+
+        f.write("\nEND_BLOCK_DATAGRID_3D")
+#=================================================================================
+#same xsf but shows a comlpelet view of wanniers guss
+#===============================================================================
+def xsf2(fplo2wan,data,num,g_n,trans):
+    f = open(fplo2wan+"/wannier.xsf%s"%num,"a")
+    f.write( "CRYSTAL\nPRIMVEC")
+    primit=dot(array(data["u"]),array(data["a"]))*0.529177
+    for i in range(3):
+        f.write("\n    ")
+        for j in range(3):
+            f.write(repr(primit[i][j]).ljust(26))
+    f.write("\nCONVVEC")
+    conven=dot(primit,array(data["b"]))
+    for i in range(3):
+        f.write("\n    ")
+        for j in range(3):
+            f.write(repr(conven[i][j]).ljust(26))
+    f.write("\nPRIMCOORD\n    %s    1"%repr(len(data["wyckoff"])).ljust(10))
+    wyckoff=[ x[1:] for x in data["wyckoff"]]
+    wyckoffs = dot(array(wyckoff),array(data["a"]))
+    cont=0
+    for wyckoff in wyckoffs:
+        f.write("\n %s %s %s %s"%(data["wyckoff"][cont][0].ljust(4),
+            repr(wyckoff[0]*0.529177).ljust(17),
+            repr(wyckoff[1]*0.529177).ljust(17),
+            repr(wyckoff[2]*0.529177).ljust(17)))
+        cont=cont+1
+        
+    f.write("\nBEGIN_BLOCK_DATAGRID_3D\n3D_field")
+    xsfmatrix=zeros((data["subdivisions"][0]*2,
+                    data["subdivisions"][1]*2,
+                    data["subdivisions"][2]*2))
+    for x in [2,-2]:
+        for y in [2,-2]:    
+            for z in [2,-2]:     
+                if x==2 and y==2 and z==2:
+                    n=0
+                    for cor_z in range(data["subdivisions"][2],
+                                        data["subdivisions"][2]*2):
+                        for cor_y in range(data["subdivisions"][1],
+                                            data["subdivisions"][1]*2):
+                            for cor_x in range(data["subdivisions"][0],
+                                            data["subdivisions"][0]*2):
+                                xsfmatrix[cor_x][cor_y][cor_z]=g_n[n]
+                                n=n+1
+                elif x==-2 and y==2 and z==2:
+                    n=0
+                    for cor_z in range(data["subdivisions"][2],data["subdivisions"][2]*2):
+                        for cor_y in range(data["subdivisions"][1],data["subdivisions"][1]*2):
+                            for cor_x in range(data["subdivisions"][0]-1,-1,-1):
+                                xsfmatrix[cor_x][cor_y][cor_z]=g_n[n]
+                                n=n+1
+ 
+                elif x==2 and y==-2 and z==2:
+                    n=0
+                    for cor_z in range(data["subdivisions"][2],data["subdivisions"][2]*2):
+                        for cor_y in range(data["subdivisions"][1]-1,-1,-1):
+                            for cor_x in range(data["subdivisions"][0],data["subdivisions"][0]*2):
+                                xsfmatrix[cor_x][cor_y][cor_z]=g_n[n]
+                                n=n+1
+ 
+                elif x==2 and y==2 and z==-2:
+                    n=0
+                    for cor_z in range(data["subdivisions"][2]-1,-1,-1):
+                        for cor_y in range(data["subdivisions"][1],data["subdivisions"][1]*2):
+                            for cor_x in range(data["subdivisions"][0],data["subdivisions"][0]*2):
+                                xsfmatrix[cor_x][cor_y][cor_z]=g_n[n]
+                                n=n+1
+ 
+                elif x==-2 and y==-2 and z==2:
+                    n=0
+                    for cor_z in range(data["subdivisions"][2],data["subdivisions"][2]*2):
+                        for cor_y in range(data["subdivisions"][1]-1,-1,-1):
+                            for cor_x in range(data["subdivisions"][0]-1,-1,-1):
+                                xsfmatrix[cor_x][cor_y][cor_z]=g_n[n]
+                                n=n+1
+ 
+                elif x==2 and y==-2 and z==-2:
+                    n=0
+                    for cor_z in range(data["subdivisions"][2]-1,-1,-1):
+                        for cor_y in range(data["subdivisions"][1]-1,-1,-1):
+                            for cor_x in range(data["subdivisions"][0],data["subdivisions"][0]*2):
+                                xsfmatrix[cor_x][cor_y][cor_z]=g_n[n]
+                                n=n+1
+ 
+                elif x==-2 and y==2 and z==-2:
+                    n=0
+                    for cor_z in range(data["subdivisions"][2]-1,-1,-1):
+                        for cor_y in range(data["subdivisions"][1],data["subdivisions"][1]*2):
+                            for cor_x in range(data["subdivisions"][0]-1,-1,-1):
+                                xsfmatrix[cor_x][cor_y][cor_z]=g_n[n]
+                                n=n+1
+ 
+                elif x==-2 and y==-2 and z==-2:
+                    n=0
+                    for cor_z in range(data["subdivisions"][2]-1,-1,-1):
+                        for cor_y in range(data["subdivisions"][1]-1,-1,-1):
+                            for cor_x in range(data["subdivisions"][0]-1,-1,-1):
+                                xsfmatrix[cor_x][cor_y][cor_z]=g_n[n]
+                                n=n+1
+    f.write("\nBEGIN_DATAGRID_3D_UNKNOWN")
+    f.write("\n    %s %s %s\n    %s %s %s"%(repr(data["subdivisions"][0]*2).ljust(6),
+                                           repr(data["subdivisions"][1]*2).ljust(6),
+                                           repr(data["subdivisions"][2]*2).ljust(6),
+                                           repr(trans[0]*0.529177).ljust(6),
+                                           repr(trans[1]*0.529177).ljust(6),
+                                           repr(trans[2]*0.529177).ljust(6)))
+    f.write("\n    %s %s %s"%(repr(2*array(data["a"])[0][0]*0.529177).ljust(26),
+                              repr(2*array(data["a"])[0][1]*0.529177).ljust(26), 
+                              repr(2*array(data["a"])[0][2]*0.529177).ljust(26)))
+    f.write("\n    %s %s %s"%(repr(2*array(data["a"])[1][0]*0.529177).ljust(26),
+                              repr(2*array(data["a"])[1][1]*0.529177).ljust(26), 
+                              repr(2*array(data["a"])[1][2]*0.529177).ljust(26)))
+    f.write("\n    %s %s %s"%(repr(2*array(data["a"])[2][0]*0.529177).ljust(26),
+                              repr(2*array(data["a"])[2][1]*0.529177).ljust(26), 
+                              repr(2*array(data["a"])[2][2]*0.529177).ljust(26)))
+    cont=0
+    for cor_z in range(0,data["subdivisions"][2]*2):
+        for cor_y in range(0,data["subdivisions"][1]*2):
+            for cor_x in range(0,data["subdivisions"][0]*2):
+                if cont%5!=0:
+                    f.write(" %s"%repr(xsfmatrix[cor_x][cor_y][cor_z].real).ljust(26))
+                else:               
+                    f.write("\n%s"%repr(xsfmatrix[cor_x][cor_y][cor_z].real).ljust(26))
+                cont=cont+1
+    f.write("\nEND_DATAGRID_3D")
+    f.write("\nEND_BLOCK_DATAGRID_3D")
+    f.close()
+#
+#=================================================
+# prijection extractor function    
+#=================================================
+def projection(fplo2wan,data,points,xsfer):
+    wan_info=[]
+    total_num_wan = 0
+    Gn=[]
+    for line in data["projections"]:
+        info={   "c" : [],    "l" : [],
+                 "r" : [],    "mr": [],
+                 "zona" : [], "theta_kind" :[],
+                 "atom" : [], "zaxis":[],
+                 "xaxis": [], "r_kind":[],   
+                 "f" : []}
+        for n,i in enumerate(line):
+            if "c" == i and len(i)==1:
+                if [float(x) for x in line[n+1:n+4]]!=[0.0,0.0,0.0]:
+                    info["c"].append([float(x) for x in line[n+1:n+4]])
+            elif "f" ==i and len(i)==1:
+                if [float(x) for x in line[n+1:n+4]]!=[0.0,0.0,0.0]:
+                    info["f"].append([float(x) for x in line[n+1:n+4]])
+            elif "l" == i:
+                info["l"].append(int(line[n+1]))
+            elif "r" == i:
+                info["r"].append(int(line[n+1]))
+            elif "zona"== i:
+                info["zona"].append(int(line[n+1]))
+            elif "z" in i and len(i)==1:
+                info["zaxis"].append([int(x) for x in line[n+1:n+4]])
+            elif "x" in i and len(i)==1:
+                info["xaxis"].append([int(x) for x in line[n+1:n+4]])
+            for wyckof in data["wyckoff"]:
+                if data["wyckoff"][0] == i:
+                    info["atom"].append(wyckof) 
+                    info["c"].append([float(x) for x in wyckof[1:4]],dot(data["a"]))
+            for key in data["THETA"]:
+                if key == i:
+                    for j in data["THETA"][key]:
+                        if not j in info["theta_kind"]:
+                            info["theta_kind"].append(j)
+        for fract in info["f"]:
+            info["c"].append(dot(fract,data["a"]))
+        if len(info["xaxis"])==0:
+            info["xaxis"]=[[1.0,0.0,0.0]]
+        if len(info["zaxis"])==0:
+            info["zaxis"]=[[0.0,0.0,1.0]]
+        if len(info["zona"])==0:
+            info["zona"]=[2.0]
+        if len(info["c"])==0:
+            info["c"]=[[0.0,0.0,0.0]]
+        if len(info["r"])==0:
+            info["r_kind"]=[data["R"][1]]
+        else:
+            for r in info["r"]:
+                info["r_kind"].append(data["R"][r]) 
+        for l in info["l"]:
+            if len(info["mr"]) ==0:
+                for mr in range(1,2*(abs(l)+1)):
+                    info["theta_kind"].append(data["LMR"]["l=%s,mr=%s" % (l,mr)])
+            else:
+                for mr in info["mr"]:
+                    info["theta_kind"].append(data["LMR"]["l=%s,mr=%s" % (l,mr)])   
+        info["num_wan"] =len(info["r_kind"])*len(info["theta_kind"])*len(info["zona"])*len(info["zaxis"])*len(info["xaxis"])*len(info["c"])
+        wan_info.append(info)
+    num=1
+    for info in wan_info:
+        total_num_wan =total_num_wan + info["num_wan"]
+        mult=int((104-len("projection line information"))/2)
+        print(mult*"#","projection line information",mult*"#")
+        for key in info:
+            if key in ["theta_kind" , "r_kind" ,"c"]:
+                print("#",repr("%s :" %key).ljust(102),"#")
+                for topi in info[key]:
+                        print("#             %s"%repr(topi).ljust(90),"#")
+            else:
+                print("#",repr("%s : %s " %(key,info[key])).ljust(102),"#")
+        print(106*"#")
+        for trans in info["c"]:
+            for zturn in info["zaxis"]:
+                for xturn in info["xaxis"]:
+                    for zona in info["zona"]:
+#                        zona= zona*1.88971616463207 
+                        zona=zona*0.52918
+                        for rfunc in info["r_kind"]:
+                            for theta_func in info["theta_kind"]:
+                                Gns=[]
+                                for za3 in [0,1]:
+                                    for ya2 in [0,1]:
+                                        for xa1 in [0,1]:
+                                            point= points
+                                            point = subtract(point,dot(data["a"],[xa1,ya2,za3]))
+                                            if set(trans)!=set([0.0,0.0,0.0]):
+                                                point = subtract(trans,point) 
+                                            if set(xturn)!=set([1.0,0.0,0.0]):
+                                                point =dot(point,xaxis_change(xturn))
+                                            if set(zturn)!=set([0,0,0.0,1.0]):
+                                                point =dot(point,zaxis_change(zturn))
+                                            r,theta,phi,rows = polar_coord(point)
+                                            g_n = multiply(rfunc(r,zona,rows),theta_func(theta,phi,rows))
+                                            Gns.append(g_n)
+                                            if xsfer =="y":
+                                                if len(Gns)==1: 
+                                                    xsf(fplo2wan,data,num,Gns[0],trans)
+                                                    xsf2(fplo2wan,data,num,Gns[0],trans)
+                                                    with open(fplo2wan+"/cord%s"%num,"a") as f:
+                                                        f.write("%s%s%s%s%s%s%s%s%s%s"%(
+                                                            "x".rjust(10) ,"y".rjust(26),
+                                                            "z".rjust(26) ,"xp".rjust(26),
+                                                            "yp".rjust(26),"zp".rjust(26),
+                                                            "r".rjust(26) ,"THETA".rjust(26),
+                                                            "PHI".rjust(26),"gn\n".rjust(26)))
+                                                        for contor in range(data["ngridpoints"]):
+                                                            f.write("%s %s %s %s %s %s %s %s %s %s \n"%(
+                                                                repr(points[contor][0]).ljust(26),
+                                                                repr(points[contor][1]).ljust(26),
+                                                                repr(points[contor][2]).ljust(26),
+                                                                
+                                                                repr(point[contor][0]).ljust(26),
+                                                                repr(point[contor][1]).ljust(26),
+                                                                repr(point[contor][2]).ljust(26),
+                                                                
+                                                                repr(r[contor][0]).ljust(26),
+                                                                repr(theta[contor][0]).ljust(26),
+                                                                repr(phi[contor][0]).ljust(26),
+                                                                
+                                                                repr(g_n[contor][0]).ljust(26)))
+                                                    num+=1
+                                Gn.append(Gns)
+    
+    if len(Gn)>len(data["sbands"]) and len(data["sbands"]) != 0:
+        print("wanniers are more than bands in control file")
+        exit(0)
+    return Gn,total_num_wan
+#=================================================
+# f(r) projection
+#=================================================
+def f_r_projection(data,points):
+    wan_info=[]
+    total_num_wan = 0
+    Gn=[]
+    rows=shape(points)[0]
+    for line in data["frprojections"]:
+        info={   "c" : [],"atom" : [] , "f" : [] , "sigmafr":[]}
+
+        for n,i in enumerate(line):
+            if "c" == i and len(i)==1:
+                if [float(x) for x in line[n+1:n+4]]!=[0.0,0.0,0.0]:
+                    info["c"].append([float(x) for x in line[n+1:n+4]])
+            elif "f" ==i and len(i)==1:
+                if [float(x) for x in line[n+1:n+4]]!=[0.0,0.0,0.0]:
+                    info["f"].append([float(x) for x in line[n+1:n+4]])
+            elif "sigmafr" == i:
+                info["sigmafr"].append(float(line[n+1]))
+ 
+            for wyckof in data["wyckoff"]:
+                if data["wyckoff"][0] == i:
+                    info["atom"].append(wyckof) 
+                    info["f"].append([float(x) for x in wyckof[1:4]])
+        for fract in info["f"]:
+            info["c"].append(dot(fract,data["a"]))
+        if len(info["c"])==0:
+            info["c"]=[[0.0,0.0,0.0]]
+        wan_info.append(info)
+    num=1
+    for info in wan_info:
+        total_num_wan =total_num_wan + len(info["c"])
+        mult=int((104-len("projection f(r) line information"))/2)
+        print(mult*"#","projection f(r) line information",mult*"#")
+        for key in info:
+            if key in ["theta_kind" , "r_kind" ,"c"]:
+                print("#",repr("%s :" %key).ljust(102),"#")
+                for topi in info[key]:
+                        print("#             %s"%repr(topi).ljust(90),"#")
+            else:
+                print("#",repr("%s : %s " %(key,info[key])).ljust(102),"#")
+        print(106*"#")
+        for trans in info["c"]:
+            for sigmafr in info["sigmafr"]:
+                Gns=[]
+                point=points
+                if set(trans)!=set([0.0,0.0,0.0]):
+                    point = subtract(trans,point) 
+                g_n = f_r_gauss(sigmafr,point,rows)
+                Gns.append(g_n)
+                Gn.append(Gns)
+    if len(Gn)>len(data["sbands"]) and len(data["sbands"]) != 0:
+        print("wanniers are more than bands in control file")
+        exit(0)
+    return Gn,total_num_wan
+#=================================================
+# this function exchange cartesian coordinate
+# system to spherical coordinate system
+#=================================================
+def polar_coord(points):
+    rows=shape(points)[0]
+    r = sqrt(points[:,0]**2+points[:,1]**2+points[:,2]**2).reshape((rows,1))
+    phi = arctan2(points[:,1],points[:,0]).reshape((rows,1))
+    theta = arccos(nan_to_num(divide(points[:,2].reshape((rows,1)),r))).reshape((rows,1))
+    return r,theta,phi,rows
+#=================================================
+# parts of a projections functions
+#=================================================
+# R(r)
+#=================================================
+def R1(r,zona,rows):
+    return 2*(zona**1.5)*exp(-1*zona*r).reshape((rows,1))
+def R2(r,zona,rows):
+    return (1/(2.0*sqrt(2)))*zona**1.5*(2-1*zona*r)*exp(-1*zona*r/2.0).reshape((rows,1))
+def R3(r,zona,rows):
+    return sqrt(1/27.0)*zona**1.5*(1-2*zona*r/3.0+2*zona**2*r**2/27.0)*exp(-1*zona*r/3.0).reshape((rows,1))
+#=================================================
+# THETA(theta,phi,rows)
+#=================================================
+def s(theta,phi,rows):
+    return 1/sqrt(4.0*pi)
+def pz(theta,phi,rows):
+    return (sqrt(3/(4.0*pi))*cos(theta)).reshape((rows,1))
+def px(theta,phi,rows):
+    return reshape(sqrt(3/(4.0*pi))*sin(theta)*cos(phi),(rows,1))
+def py(theta,phi,rows):
+    return (sqrt(3/(4.0*pi))*sin(theta)*sin(phi)).reshape((rows,1))
+#=================================================
+def dz2(theta,phi,rows):
+    return (sqrt(5/(16.0*pi))*(3*cos(theta)**2-1)).reshape((rows,1))
+def dxz(theta,phi,rows):
+    return (sqrt(15/(4.0*pi))*sin(theta)).reshape((rows,1))
+def dyz(theta,phi,rows):
+    return (sqrt(15/(4.0*pi))*sin(theta)*cos(theta)*sin(phi)).reshape((rows,1))
+def dx2_y2(theta,phi,rows):
+    return (sqrt(15/(16.0*pi))*sin(theta)**2*cos(2*phi)).reshape((rows,1))
+def dxy(theta,phi,rows):
+    return (sqrt(15/(16.0*pi))*sin(theta)**2*sin(2*phi)).reshape((rows,1))
+#=================================================
+def fz3(theta,phi,rows):
+    return ((sqrt(7)/(4.0*sqrt(pi)))*(5*cos(theta)**3-3*cos(theta))).reshape((rows,1))
+def fxz2(theta,phi,rows):
+    return ((sqrt(21)/(4.0*sqrt(2*pi)))*(5*cos(theta)**2-1)*sin(theta)*cos(phi)).reshape((rows,1))
+def fyz2(theta,phi,rows):
+    return ((sqrt(105)/(4.0*sqrt(pi)))*sin(theta)**2*cos(theta)*cos(2*phi)).reshape((rows,1))
+def fz__x2_y2__(theta,phi,rows):
+    return ((sqrt(105)/(4*sqrt(pi)))*sin(theta)**2*cos(theta)*cos(2*phi)).reshape((rows,1))
+def fxyz(theta,phi,rows):
+    return ((sqrt(105)/(4.0*sqrt(pi)))*sin(theta)**2*cos(theta)*sin(2*phi)).reshape((rows,1))
+def fx__x2_3y2__(theta,phi,rows):
+    return ((sqrt(25)/(4*sqrt(2*pi)))*sin(theta)**3*(cos(phi)**2-3*sin(phi)**2)*cos(phi)).reshape((rows,1))
+def fy__3x2_y2__(theta,phi,rows):
+    return ((sqrt(35)/(4*sqrt(2*pi)))*sin(theta)**3*(3*cos(theta)-sin(phi)**2)*sin(phi)).reshape((rows,1))
+#=================================================
+def sp_1(theta,phi,rows):
+    return ((1/sqrt(2))*s(theta,phi,rows)+(1/sqrt(2))*px(theta,phi,rows)).reshape((rows,1))
+def sp_2(theta,phi,rows):
+    return ((1/sqrt(2))*s(theta,phi,rows)-(1/sqrt(2))*px(theta,phi,rows)).reshape((rows,1))
+#=================================================
+def sp2_1(theta,phi,rows):
+    return ((1/sqrt(3))*s(theta,phi,rows)-(1/sqrt(6))*px(theta,phi,rows)+(1/sqrt(2))*py(theta,phi,rows)).reshape((rows,1))
+def sp2_2(theta,phi,rows):
+    return ((1/sqrt(3))*s(theta,phi,rows)-(1/sqrt(6))*px(theta,phi,rows)-(1/sqrt(2))*py(theta,phi,rows)).reshape((rows,1))
+def sp2_3(theta,phi,rows):
+    return ((1/sqrt(3))*s(theta,phi,rows)+(2/sqrt(6))*px(theta,phi,rows)).reshape((rows,1))
+#=================================================
+def sp3_1(theta,phi,rows):
+    return (0.5*(s(theta,phi,rows)+px(theta,phi,rows)+py(theta,phi,rows)+pz(theta,phi,rows))).reshape((rows,1))
+def sp3_2(theta,phi,rows):
+    return (0.5*(s(theta,phi,rows)+px(theta,phi,rows)-py(theta,phi,rows)-pz(theta,phi,rows))).reshape((rows,1))
+def sp3_3(theta,phi,rows):
+    return (0.5*(s(theta,phi,rows)-px(theta,phi,rows)+py(theta,phi,rows)-pz(theta,phi,rows))).reshape((rows,1))
+def sp3_4(theta,phi,rows):
+    return (0.5*(s(theta,phi,rows)-px(theta,phi,rows)-py(theta,phi,rows)+pz(theta,phi,rows))).reshape((rows,1))
+#=================================================
+def sp3d_1(theta,phi,rows):
+    return ((1/sqrt(3))*s(theta,phi,rows)-(1/sqrt(6))*px(theta,phi,rows)+(1/sqrt(2))*py(theta,phi,rows)).reshape((rows,1))
+def sp3d_2(theta,phi,rows):
+    return ((1/sqrt(3))*s(theta,phi,rows)-(1/sqrt(6))*px(theta,phi,rows)-(1/sqrt(2))*py(theta,phi,rows)).reshape((rows,1))
+def sp3d_3(theta,phi,rows):
+    return ((1/sqrt(3))*s(theta,phi,rows)+(2/sqrt(6))*px(theta,phi,rows)).reshape((rows,1))
+def sp3d_4(theta,phi,rows):
+    return ((1/sqrt(2))*pz(theta,phi,rows)+(1/sqrt(2))*dz2(theta,phi,rows)).reshape((rows,1))
+def sp3d_5(theta,phi,rows):
+    return ((-1/sqrt(2))*pz(theta,phi,rows)+(2/sqrt(2))*dz2(theta,phi,rows)).reshape((rows,1))
+#=================================================
+def sp3d2_1(theta,phi,rows):
+    return ((1/sqrt(6))*s(theta,phi,rows)-(1/sqrt(2))*px(theta,phi,rows)-(1/sqrt(12))*dz2(theta,phi,rows)+0.5*dx2_y2(theta,phi,rows)).reshape((rows,1))
+def sp3d2_2(theta,phi,rows):
+    return ((1/sqrt(6))*s(theta,phi,rows)+(1/sqrt(2))*px(theta,phi,rows)-(1/sqrt(12))*dz2(theta,phi,rows)+0.5*dx2_y2(theta,phi,rows)).reshape((rows,1))
+def sp3d2_3(theta,phi,rows):
+    return ((1/sqrt(6))*s(theta,phi,rows)-(1/sqrt(2))*py(theta,phi,rows)-(1/sqrt(12))*dz2(theta,phi,rows)-0.5*dx2_y2(theta,phi,rows)).reshape((rows,1))
+def sp3d2_4(theta,phi,rows):
+    return ((1/sqrt(6))*s(theta,phi,rows)+(1/sqrt(2))*py(theta,phi,rows)-(1/sqrt(12))*dz2(theta,phi,rows)-0.5*dx2_y2(theta,phi,rows)).reshape((rows,1))
+def sp3d2_5(theta,phi,rows):
+    return ((1/sqrt(6))*s(theta,phi,rows)-(1/sqrt(2))*pz(theta,phi,rows)+(1/sqrt(3))*dz2(theta,phi,rows)).reshape((rows,1))
+def sp3d2_6(theta,phi,rows):
+    return ((1/sqrt(6))*s(theta,phi,rows)+(1/sqrt(2))*pz(theta,phi,rows)+(1/sqrt(3))*dz2(theta,phi,rows)).reshape((rows,1))
+#=================================================
+#   atomic orbital for pdos
+#=================================================
+def _P_(theta,phi,rows):
+    return reshape(sqrt(3.0/(2.0*pi))*1j*sin(theta)*sin(phi)+0.5* sqrt(3.0/(2.0*pi))*cos(theta),(rows,1))
+#=================================================
+# f(r) for A matrix according
+# to gaussian function
+#=================================================
+def f_r_gauss(sigma,t_point,rows):
+    return (1.0/(sigma*sqrt(pi)))*exp(multiply(-1,divide(add(add(pow(t_point[:,0],2),pow(t_point[:,1],2)),pow(t_point[:,2],2)),sigma))).reshape((rows,1))
+#=================================================
+# dos projection
+#=================================================
+def dos_projection(fplo2wan,data,points):
+    wan_info=[]
+    total_num_pdos = 0
+    Gn=[]
+    for line in data["pdos"]:
+        info={   "c" : [],    "l" : [],
+                 "mr": [], "theta_kind" :[],
+                 "atom" : [], "zaxis":[],
+                 "xaxis": [], "f" : []}
+        for n,i in enumerate(line):
+            if "c" == i and len(i)==1:
+                if [float(x)*0.52918 for x in line[n+1:n+4]]!=[0.0,0.0,0.0]:
+                    info["c"].append([float(x) for x in line[n+1:n+4]])
+            elif "f" ==i and len(i)==1:
+                if [float(x) for x in line[n+1:n+4]]!=[0.0,0.0,0.0]:
+                    info["f"].append([float(x) for x in line[n+1:n+4]])
+            elif "l" == i:
+                info["l"].append(int(line[n+1]))
+            elif "zona"== i:
+                info["zona"].append(int(line[n+1]))
+            elif "z" in i and len(i)==1:
+                info["zaxis"].append([int(x) for x in line[n+1:n+4]])
+            elif "x" in i and len(i)==1:
+                info["xaxis"].append([int(x) for x in line[n+1:n+4]])
+            for wyckof in data["wyckoff"]:
+                if data["wyckoff"][0] == i:
+                    info["atom"].append(wyckof) 
+                    info["c"].append(dot(data["a"],[float(x) for x in wyckof[1:4]]))
+            for key in data["THETA"]:
+                if key == i:
+                    for j in data["THETA"][key]:
+                        if not j in info["theta_kind"]:
+                            info["theta_kind"].append(j)
+                            
+        for fract in info["f"]:
+            info["c"].append(fract,dot(data["a"]))
+        if len(info["xaxis"])==0:
+            info["xaxis"]=[[1.0,0.0,0.0]]
+        if len(info["zaxis"])==0:
+            info["zaxis"]=[[0.0,0.0,1.0]]
+        if len(info["c"])==0:
+            info["c"]=[[0.0,0.0,0.0]]
+        for l in info["l"]:
+            if len(info["mr"]) ==0:
+                for mr in range(1,2*(abs(l)+1)):
+                    info["theta_kind"].append(data["LMR"]["l=%s,mr=%s" % (l,mr)])
+            else:
+                for mr in info["mr"]:
+                    info["theta_kind"].append(data["LMR"]["l=%s,mr=%s" % (l,mr)])   
+
+        info["num_wan"] =len(info["theta_kind"])*len(info["zaxis"])*len(info["xaxis"])*len(info["c"])
+        wan_info.append(info)
+    num=1
+    for info in wan_info:
+        total_num_pdos =total_num_pdos + info["num_wan"]
+        mult=int((104-len("pdos projection line information"))/2)
+        print(mult*"#","pdos projection line information",mult*"#")
+        for key in info:
+            if key in ["theta_kind" , "r_kind" ,"c"]:
+                print("#",repr("%s :" %key).ljust(102),"#")
+                for topi in info[key]:
+                        print("#             %s"%repr(topi).ljust(90),"#")
+            else:
+                print("#",repr("%s : %s " %(key,info[key])).ljust(102),"#")
+        print(106*"#")
+        for trans in info["c"]:
+            for zturn in info["zaxis"]:
+                for xturn in info["xaxis"]:
+                    for theta_func in info["theta_kind"]:
+                        Gns=[]
+                        for za3 in [0,1]:
+                            for ya2 in [0,1]:
+                                for xa1 in [0,1]:
+                                    point= points
+                                    point = subtract(point,multiply([xa1,ya2,za3],data["lattice constants"]))
+                                    if set(trans)!=set([0.0,0.0,0.0]):
+                                        point = subtract(point ,trans) 
+                                    if set(xturn)!=set([1.0,0.0,0.0]):
+                                        point =dot(point,xaxis_change(xturn))
+                                    if set(zturn)!=set([0,0,0.0,1.0]):
+                                        point =dot(point,zaxis_change(zturn))
+                                    r,theta,phi,rows = polar_coord(point)
+                                    g_n = theta_func(theta,phi,rows)
+                                    Gns.append(g_n)
+                        Gn.append(Gns)
+    print(Gn)
+    return Gn,total_num_pdos
+#
+#======================================================
+# this function calculate  pdos parametrs 
+#======================================================
+def pmaker(psi_n_k,k,alat,Gn,dos_matrix,dv,ind): 
+    g_n_index = 0
+    for gn_m in Gn:
+        g_n = 0
+        gn_m_in = 0
+        for za3 in [0,1]:
+            for ya2 in [0,1]:
+                for xa1 in[0,1]:
+                    g_n = multiply(gn_m[gn_m_in],
+                            exp(1j*dot(k,dot([xa1,ya2,za3],alat))))
+                    gn_m_in += 1
+        g_n_index = g_n_index+1
+        integ = multiply(sum(multiply(g_n,psi_n_k)),dv)
+        dos_matrix[ind][g_n_index] = dos_matrix[ind][g_n_index] + integ*integ.conj()
+    return dos_matrix
+#=================================================
+# this function make a 
+# pdos_sigma_projects parametrs 
+#=================================================
+def psigmaker(psi_n_k,ik,k,alat,Gn,dv,dos_matrix): 
+    g_n_index = 0
+    for gn_m in Gn:
+        g_n = 0
+        gn_m_in = 0
+        for za3 in [0,1]:
+            for ya2 in [0,1]:
+                for xa1 in[0,1]:
+                    g_n = multiply(gn_m[gn_m_in],
+                            exp(1j*dot(k,dot([xa1,ya2,za3],alat))))
+                    gn_m_in += 1
+        g_n_index = g_n_index+1
+        integ = multiply(sum(multiply(psi_n_k,g_n)),dv)
+        dos_matrix[1:,g_n_index] =  integ*integ.conj()
+    return dos_matrix 
+#=================================================
+## this function make a 
+# pdos_sigma_projects2 parametrs 
+#=================================================
+def psigmaker2(psi_n_k,ik,k,alat,Gn,dv,dos_matrix): 
+    g_n_index = 0
+    for gn_m in Gn:
+        g_n = gn_m[0]
+        g_n_index = g_n_index+1
+        integral = multiply(psi_n_k,g_n)
+        integ = multiply(sum(multiply(psi_n_k,g_n)),dv)
+        dos_matrix[1:,g_n_index] = integ * integ.conj()
+    g_n=1
+    g_n_index = g_n_index+1
+    dos_matrix[1:,g_n_index]= multiply(sum(multiply(psi_n_k,psi_n_k.conj())),dv)
+    return dos_matrix 
+#=================================================
+# this function calculate wannier.amn parametrs 
+#=================================================
+def amaker(n,psi_n_k,ik,k,alat,dv,apts,Gn,fplo2wan): 
+    g_n_index = 0
+    with open(fplo2wan+"/wannier.amn","a") as f:
+        for gn_m in Gn:
+            g_n = 0
+            gn_m_in = 0
+            for za3 in [0,1]:
+                for ya2 in [0,1]:
+                    for xa1 in[0,1]:
+                        g_n += multiply(gn_m[gn_m_in],exp(1j*dot(k,multiply(alat,[xa1,ya2,za3]))))
+                        gn_m_in += 1
+            g_n_index = g_n_index+1
+            integral = multiply(sum(multiply(conj(psi_n_k),g_n)),dv)
+            f.write("%s %s %s %s %s\n" %(repr(n).ljust(6),repr(g_n_index).ljust(6),repr(ik).ljust(6),
+                                         repr(integral.real).ljust(26),repr(integral.imag).ljust(26)))
+    g_n_index = 0
+    with open(fplo2wan+"/wannier1.amn","a") as f:
+        for gn_m in Gn:
+            g_n = gn_m[0]
+            gn_m_in += 1
+            g_n_index = g_n_index+1
+            integral = multiply(sum(multiply(psi_n_k,g_n)),dv)
+            f.write("%s %s %s %s %s\n" %(repr(n).ljust(6),repr(g_n_index).ljust(6),repr(ik).ljust(6),
+                                         repr(integral.real).ljust(26),repr(integral.imag).ljust(26)))
+ 
+            apts.append("<psi_%s_%s|g_%s>" %(n,ik,g_n_index))
+    return apts
+#=================================================
+# this function calculate wannier.amn 
+#    parametrs by f(r)
+#=================================================
+def framaker(n,psi_n_k,ik,k,alat,dv,apts,Gn,fplo2wan): 
+    g_n_index = 0
+    with open(fplo2wan+"/wannierfr.amn","a") as f:
+        for gn_m in Gn:
+            g_n = 0
+            g_n = gn_m[0]
+            g_n_index = g_n_index+1
+            integral = multiply(sum(multiply(conj(psi_n_k),g_n)),dv)
+            f.write("%s %s %s %s %s\n" %(repr(n).ljust(6),repr(g_n_index).ljust(6),repr(ik).ljust(6),
+                                         repr(integral.real).ljust(26),repr(integral.imag).ljust(26)))
+            apts.append("<psi_%s_%s|g_%s>" %(n,ik,g_n_index))
+    return apts
+#=================================================
+# this function write the headers of files
+#=================================================
+def header_writer(data,fplo2wan,filename):
+    if ".mmn" in filename:
+        with open(fplo2wan+"/"+filename,"a") as f:
+            f.write(strftime("%a, %d %b %Y %H:%M:%S wannier.mmn\n", gmtime()))
+            f.write("%s %s %s \n" %(repr(len(data["sbands"])).rjust(6),
+                repr(len(data["kpoints"])).rjust(6),
+                repr(len(data["b_vect"])).rjust(6)))
+    elif filename == "wannier.win":    
+        with open("%s/%s" % (fplo2wan,filename),"a") as f:
+            f.write(strftime("#%a, %d %b %Y %H:%M:%S \n", gmtime()))
+
+    elif "wannier1.amn" == filename or "wannier.amn" == filename :
+        with open(fplo2wan+"/"+filename,"a") as f:    
+            f.write(strftime("%a, %d %b %Y %H:%M:%S \n", gmtime()))
+            f.write("%s %s %s \n" % (repr(len(data["sbands"])).rjust(6),
+                                     repr(len(data["kpoints"])).rjust(6),
+                                     repr(data["total_num_wan"]).rjust(6)))
+    elif filename =="wannierfr.amn":
+        with open("%s%s" %(fplo2wan,"wannierfr.amn"),"a") as f:    
+            f.write(strftime("%a, %d %b %Y %H:%M:%S wannierfr.amn\n", gmtime()))
+            f.write("%s %s %s \n" % (repr(len(data["sbands"])).rjust(6),
+                                     repr(len(data["kpoints"])).rjust(6),
+                                     repr(len(data["Gnfr"])).rjust(6)))
+ 
+#=================================================
+# this function calculate the changed z-dirextion 
+#=================================================
+def zaxis_change(zaxis):
+    r=sqrt(zaxis[0]**2+zaxis[1]**2+zaxis[2]**2)
+    alpha =arctan2(zaxis[1],zaxis[0])
+    beta = arccos(zaxis[2]/r)
+    return array([[cos(beta)*cos(alpha),cos(beta)*sin(alpha),sin(beta)],
+                  [-1.0*sin(alpha),cos(alpha),0.0],
+                  [-1.0*sin(beta)*cos(alpha),-1*sin(beta)*sin(alpha),cos(beta)]])
+#=================================================
+# this function calculate the changed x-dirextion
+#=================================================
+def xaxis_change(xaxis):
+    r=sqrt(xaxis[0]**2+xaxis[1]**2+xaxis[2]**2)
+    alpha =arctan2(xaxis[1],xaxis[0])
+    beta = arccos(xaxis[2]/r)
+    return array([[cos(beta)*cos(alpha),cos(beta)*-1.0*sin(alpha),sin(beta)],
+                  [sin(alpha),cos(alpha),0.0],
+                  [-1.0*sin(beta)*cos(alpha),sin(beta)*sin(alpha),cos(beta)]])
+#=================================================
+# write dos matrix 
+#=================================================
+def dos_mat(dos_matrix,fplo2wan,file_name):
+    i_len = len(dos_matrix)
+    j_len = len(dos_matrix[0])
+    with open(fplo2wan+file_name,"a") as f:
+        f.write("# Energy".ljust(26))
+        for j in range(1,j_len):
+            f.write(repr(j).ljust(26))
+        f.write("\n")
+        for i in range(1,i_len):
+            f.write(repr(dos_matrix[i][0].real).ljust(26),)
+            for j in range(1,j_len):
+                f.write(repr(dos_matrix[i][j].real).ljust(26))
+            f.write("\n")
+#=================================================
+#                nnkp information extractor
+#=================================================                
+def nnkp_read(nnkp_file):
+    c = False
+    nnkp_list=[]
+    with open( nnkp_file ,"r")as f:
+        for line in f:
+            if "begin nnkpts" in line:
+                c = True
+            elif "end nnkpts" in line:
+                c= False 
+            elif c==True:
+                nnkp_list.append([int(i) for i in line.split()])
+    nnkp_list[0]=nnkp_list[0][0]
+    return nnkp_list           
+#=================================================
+# #calling main
+#=================================================
+if __name__ =="__main__":main()
